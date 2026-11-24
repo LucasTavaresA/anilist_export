@@ -8,7 +8,30 @@ Export your anilist to a excel spreadsheet.
 al_export
 ```
 
+## Just run it (requires uv)
+
+```sh
+uvx --from git+https://github.com/lucastavaresa/anilist_export al_export
+```
+
+Or run after cloning the repo:
+
+```sh
+git clone https://github.com/lucastavaresa/anilist_export.git
+cd anilist_export
+uv run al_export
+```
+
 ## Install
+
+- uv:
+
+```sh
+git clone https://github.com/lucastavaresa/anilist_export.git
+cd anilist_export
+uv tool install .
+al_export
+```
 
 - pipx:
 
