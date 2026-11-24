@@ -4,12 +4,22 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
-async def fetch_status(session, url, username, status_type):
+STATUS_ORDER = [
+    "CURRENT",
+    "COMPLETED",
+    "PLANNING",
+    "PAUSED",
+    "DROPPED",
+    "REPEATING"
+]
+
+async def fetch_entries(session, url, username, media_type):
     query = """
         query($username: String) {
-        MediaListCollection(userName: $username, type: ANIME, status: %s) {
+        MediaListCollection(userName: $username, type: %s) {
             lists {
             entries {
+                id
                 media {
                 title {
                     romaji
@@ -17,6 +27,7 @@ async def fetch_status(session, url, username, status_type):
                 }
                 format
                 episodes
+                chapters
                 genres
                 siteUrl
                 }
@@ -27,7 +38,7 @@ async def fetch_status(session, url, username, status_type):
             }
         }
         }
-        """ % (status_type)
+        """ % (media_type)
     variables = {"username": username}
 
     async with session.post(url, json={'query': query, 'variables': variables}) as response:
@@ -37,53 +48,37 @@ async def fetch_status(session, url, username, status_type):
             return []
 
         data = await response.json()
-        lists = data.get("data", {}).get("MediaListCollection", {}).get("lists", [{}])
-        if len(lists) == 0:
-            return []
-        return lists[0].get("entries", [])
+        collection = (data.get("data") or {}).get("MediaListCollection") or {}
 
-async def export_xlsx():
-    wb = Workbook()
-    ws = wb.active
-    if ws is None:
-        ws = wb.create_sheet()
-    ws.append(["Romaji", "Format", "Status", "Progress/Episodes", "Genres", "Score"])
+        entries = {}
+        for media_list in collection.get("lists") or []:
+            for entry in media_list.get("entries") or []:
+                entries.setdefault(entry["id"], entry)
 
-    url = "https://graphql.anilist.co"
-    username = input("Enter your Anilist username: ")
-    if username == "":
-        print("Username not provided!")
-        return
-    output = input("Enter output path [anime_list.xlsx]: ") or "anime_list.xlsx"
-    status = [
-        "CURRENT",
-        "COMPLETED",
-        "PLANNING",
-        "PAUSED",
-        "DROPPED",
-        "REPEATING"
-    ]
+        return sorted(
+            entries.values(),
+            key=lambda e: STATUS_ORDER.index(e["status"]) if e["status"] in STATUS_ORDER else len(STATUS_ORDER)
+        )
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_status(session, url, username, status_type) for status_type in status]
-        results = await asyncio.gather(*tasks)
+def fill_sheet(ws, media_type, entries):
+    total_key = "episodes" if media_type == "ANIME" else "chapters"
+    ws.append(["Romaji", "Format", "Status", f"Progress/{total_key.capitalize()}", "Genres", "Score"])
 
-        for data in results:
-            for anime in data:
-                anime["media"]["genres"] = str(anime["media"]["genres"]).replace("[", "").replace("]", "").replace("'", "")
-                ws.append([
-                    anime["media"]["title"]["romaji"],
-                    anime["media"]["format"],
-                    anime["status"],
-                    f"{anime['progress']}/{anime['media']['episodes']}",
-                    anime["media"]["genres"],
-                    anime["score"],
-                ])
-                last_row = ws.max_row
-                title_cell = ws.cell(row=last_row, column=1)
-                title_cell.hyperlink = anime["media"]["siteUrl"]
-                title_cell.style = "Hyperlink"
-                title_cell.font = Font(name='Noto Sans')
+    for entry in entries:
+        genres = ", ".join(entry["media"]["genres"])
+        ws.append([
+            entry["media"]["title"]["romaji"],
+            entry["media"]["format"],
+            entry["status"],
+            f"{entry['progress']}/{entry['media'][total_key] or '?'}",
+            genres,
+            entry["score"],
+        ])
+        last_row = ws.max_row
+        title_cell = ws.cell(row=last_row, column=1)
+        title_cell.hyperlink = entry["media"]["siteUrl"]
+        title_cell.style = "Hyperlink"
+        title_cell.font = Font(name='Noto Sans')
 
     for col_num in range(1, ws.max_column + 1):
         max_length = 0
@@ -94,6 +89,24 @@ async def export_xlsx():
             if cell_value:
                 max_length = max(max_length, len(str(cell_value)))
         ws.column_dimensions[col_letter].width = max_length + 2
+
+async def export_xlsx():
+    url = "https://graphql.anilist.co"
+    username = input("Enter your Anilist username: ")
+    if username == "":
+        print("Username not provided!")
+        return
+    output = input("Enter output path [anilist.xlsx]: ") or "anilist.xlsx"
+    media_types = ["ANIME", "MANGA"]
+
+    wb = Workbook()
+    if wb.active is not None:
+        wb.remove(wb.active)
+
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(*[fetch_entries(session, url, username, t) for t in media_types])
+        for media_type, entries in zip(media_types, results):
+            fill_sheet(wb.create_sheet(media_type.capitalize()), media_type, entries)
 
     wb.save(output)
 
